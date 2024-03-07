@@ -5,6 +5,8 @@ use std::{sync::{Arc, Mutex}, thread, time::Duration};
 use std::process;
 use core::mem;
 use std::sync::mpsc::channel;
+use std::collections::VecDeque;
+use std::process::exit;
 /// Reads the current value of the processor's time-stamp counter.
 fn rdtsc() -> u64 {
     let lo: u32;
@@ -19,7 +21,47 @@ fn rdtsc() -> u64 {
     }
     ((hi as u64) << 32) | (lo as u64)
 }
+fn basic_cpu_operations(iterations: u32) {
+    let mut y = 0u64; // Use a different variable for operations
+    let mut sum = 0u64; // To accumulate results and prevent optimization
+    let mut toggle = false;
 
+    for i in 0..iterations {
+        // Simple arithmetic operations with a twist
+        y = y.wrapping_add(i as u64 * 3);
+        y = y.wrapping_mul(2);
+
+        // Introduce a conditional operation to simulate control flow
+        if y % 4 == 0 {
+            y = y.wrapping_div(2);
+        } else {
+            y = y.wrapping_mul(2);
+        }
+
+        // Bitwise operations with variability
+        y = y ^ 0xAA; // XOR with a different constant
+        y = y.rotate_left(3); // Use rotate to introduce variability
+        y = y | 0x55;
+        y = y & 0xFF;
+
+        // Toggle operation to simulate dynamic behavior
+        if toggle {
+            y = !y; // Bitwise NOT every other iteration
+        }
+        toggle = !toggle;
+
+        // Accumulate sum to use the result and prevent optimization
+        sum = sum.wrapping_add(y);
+
+        // Memory barrier to ensure operations are not optimized away
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    }
+
+    // Use sum in a trivial way to ensure it's not optimized out
+    if sum == u64::MAX {
+        println!("Unlikely event to use sum and prevent optimization: {}", sum);
+    }
+}
 /// Performs a series of simple operations.
 fn simple_operations(iterations: u32) {
     let mut arr = [1, 2, 3, 4, 5];
@@ -109,50 +151,85 @@ fn simple_function(input: u32) -> u32 {
 }
 
 
+fn calculate_statistics(data: &VecDeque<u64>) -> (f64, f64) {
+    let sum: u64 = data.iter().sum();
+    let count = data.len() as f64;
+    let mean = sum as f64 / count;
+
+    let variance = data.iter().map(|value| {
+        let diff = *value as f64 - mean;
+        diff * diff
+    }).sum::<f64>() / count;
+
+    let std_deviation = variance.sqrt();
+
+    (mean, std_deviation)
+}
+
 fn main() {
     const ITERATIONS: u32 = 1000;
-    const NUM_EXECUTIONS: u32 = 5000;
-    const SLEEP_DURATION_MS_MAIN: u64 = 10; // Main thread sleep duration
-    const SLEEP_DURATION_MS_SPAWNED: u64 = 1; // Spawned thread sleep duratio
-    const MAX_ATTEMPTS: u32 = 2; // Allows for one retry
-    const CYCLE_THRESHOLD: u64 = 31000;
-    let mutex = Arc::new(Mutex::new(0)); // Shared mutex
-    let (tx, rx) = channel(); // Channel for communicating cycles
+    const MAX_ATTEMPTS: u32 = 50;
+    const CYCLE_THRESHOLD: f64 = 31000.0;
+    const CYCLE_THRESHOLD2: f64 = 10000.0;
+    let mut cycles_data_simple = VecDeque::new();
+    let mut cycles_data_basic = VecDeque::new();
 
-    let mut attempt = 0;
-    while attempt < MAX_ATTEMPTS {
-        attempt += 1;
-        let mutex_clone = Arc::clone(&mutex);
-        let tx_clone = tx.clone();
+    let mutex = Arc::new(Mutex::new(0));
+    let (tx, rx) = channel();
 
-        thread::spawn(move || {
-            let _guard = mutex_clone.lock().unwrap(); // Lock the mutex in the spawned thread
-            // Measure before performing operations
+    let mut successful_attempt = false; // To track if the loop exits due to condition being met
+
+    for attempt in 0..MAX_ATTEMPTS {
+        let mutex_clone_simple = Arc::clone(&mutex);
+        let tx_clone_simple = tx.clone();
+
+        let handle_simple = thread::spawn(move || {
+            let _guard = mutex_clone_simple.lock().unwrap();
             let start = rdtsc();
-            simple_operations(ITERATIONS); // Perform the workload
+            simple_operations(ITERATIONS);
             let end = rdtsc();
-            // Send the measured cycles back to the main thread
-            tx_clone.send(end - start).unwrap();
+            tx_clone_simple.send(("simple", end - start)).unwrap();
         });
 
-        // Main thread sleeps to simulate delay and ensure the spawned thread executes
-        thread::sleep(Duration::from_millis(SLEEP_DURATION_MS_MAIN));
-        // Try to acquire the mutex, forcing the main thread to wait until the spawned thread releases it
-        let _lock = mutex.lock().unwrap();
+        let mutex_clone_basic = Arc::clone(&mutex);
+        let tx_clone_basic = tx.clone();
 
-        // Receive the cycle count from the spawned thread
-        if let Ok(cycles) = rx.recv() {
-            println!("Attempt {}: Cycles for simple operations: {}", attempt, cycles);
-            if cycles < CYCLE_THRESHOLD {
-                println!("Below cycle threshold, indicating non-VM or efficient VM.");
-                break; // Exit if we meet the condition
+        let handle_basic = thread::spawn(move || {
+            let _guard = mutex_clone_basic.lock().unwrap();
+            let start = rdtsc();
+            basic_cpu_operations(ITERATIONS);
+            let end = rdtsc();
+            tx_clone_basic.send(("basic", end - start)).unwrap();
+        });
+
+        handle_simple.join().unwrap();
+        handle_basic.join().unwrap();
+
+        for _ in 0..2 {
+            match rx.recv() {
+                Ok(("simple", cycles)) => cycles_data_simple.push_back(cycles),
+                Ok(("basic", cycles)) => cycles_data_basic.push_back(cycles),
+                Ok(_) => (),
+                Err(e) => println!("Error receiving cycles from thread: {:?}", e),
             }
-        } else {
-            println!("Error receiving cycles from thread.");
         }
 
-        if attempt >= MAX_ATTEMPTS {
-            println!("Attempt limit reached. Potential VM detected or inefficient VM.");
+        let (mean_simple, std_deviation_simple) = calculate_statistics(&cycles_data_simple);
+        let (mean_basic, std_deviation_basic) = calculate_statistics(&cycles_data_basic);
+
+        println!("Attempt {}: Simple Mean cycles: {}, Standard Deviation: {}", attempt + 1, mean_simple, std_deviation_simple);
+        println!("Attempt {}: Basic Mean cycles: {}, Standard Deviation: {}", attempt + 1, mean_basic, std_deviation_basic);
+
+        if mean_simple < CYCLE_THRESHOLD && mean_basic < CYCLE_THRESHOLD2 {
+            println!("Below cycle threshold, indicating non-VM or efficient VM.");
+            successful_attempt = true; // Mark successful attempt
+            break;
         }
+    }
+
+    // Check if the loop completed due to reaching the max attempts without satisfying condition
+    if !successful_attempt {
+        println!("Attempt limit reached. Potential VM detected or inefficient VM. Exiting program.");
+        exit(1);
     }
 }
