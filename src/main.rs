@@ -169,7 +169,7 @@ fn calculate_statistics(data: &VecDeque<u64>) -> (f64, f64) {
 fn main() {
     const ITERATIONS: u32 = 1000;
     const MAX_ATTEMPTS: u32 = 50;
-    const CYCLE_THRESHOLD: f64 = 31000.0;
+    const CYCLE_THRESHOLD: f64 = 21000.0;
     const CYCLE_THRESHOLD2: f64 = 10000.0;
     let mut cycles_data_simple = VecDeque::new();
     let mut cycles_data_basic = VecDeque::new();
