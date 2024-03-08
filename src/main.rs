@@ -214,7 +214,7 @@ unsafe fn rdtscp() -> (u64, u32) {
 fn main() -> io::Result<()> {
     const ITERATIONS: u32 = 1000;
     const MAX_ATTEMPTS: u32 = 5000;
-    const CYCLE_THRESHOLD: f64 = 30000.0;
+    const CYCLE_THRESHOLD: f64 = 20000.0;
     const CYCLE_THRESHOLD2: f64 = 8000.0;
     const DATA_FILE_PATH: &str = "cycle_data.txt";
     const LIFE_DEV: f64 = 40000.0;
