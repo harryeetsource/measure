@@ -7,6 +7,11 @@ use core::mem;
 use std::sync::mpsc::channel;
 use std::collections::VecDeque;
 use std::process::exit;
+use std::fs::{OpenOptions};
+use std::io::{Write, BufReader, BufRead};
+use std::io;
+use std::fs::File;
+use std::path::Path;
 /// Reads the current value of the processor's time-stamp counter.
 fn rdtsc() -> u64 {
     let lo: u32;
@@ -151,6 +156,35 @@ fn simple_function(input: u32) -> u32 {
 }
 
 
+fn read_cycle_data_from_file(file_path: &str) -> io::Result<VecDeque<u64>> {
+    // Check if the file exists
+    if !Path::new(file_path).exists() {
+        // If the file does not exist, return an empty VecDeque<u64>
+        return Ok(VecDeque::new());
+    }
+
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut data = VecDeque::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if let Ok(number) = line.parse::<u64>() {
+            data.push_back(number);
+        }
+    }
+
+    Ok(data)
+}
+
+fn append_cycle_data_to_file(file_path: &str, cycle_data: &[u64]) -> io::Result<()> {
+    let mut file = OpenOptions::new().append(true).create(true).open(file_path)?;
+    for &cycles in cycle_data {
+        writeln!(file, "{}", cycles)?;
+    }
+    Ok(())
+}
+
 fn calculate_statistics(data: &VecDeque<u64>) -> (f64, f64) {
     let sum: u64 = data.iter().sum();
     let count = data.len() as f64;
@@ -166,18 +200,24 @@ fn calculate_statistics(data: &VecDeque<u64>) -> (f64, f64) {
     (mean, std_deviation)
 }
 
-fn main() {
+fn main() -> io::Result<()> {
     const ITERATIONS: u32 = 1000;
     const MAX_ATTEMPTS: u32 = 50;
     const CYCLE_THRESHOLD: f64 = 21000.0;
     const CYCLE_THRESHOLD2: f64 = 10000.0;
+    const DATA_FILE_PATH: &str = "cycle_data.txt";
+
+    // Initialize cycle data vectors for this session
     let mut cycles_data_simple = VecDeque::new();
     let mut cycles_data_basic = VecDeque::new();
+
+    // Read historical cycle data from file
+    let mut historical_cycles_data = read_cycle_data_from_file(DATA_FILE_PATH)?;
 
     let mutex = Arc::new(Mutex::new(0));
     let (tx, rx) = channel();
 
-    let mut successful_attempt = false; // To track if the loop exits due to condition being met
+    let mut successful_attempt = false;
 
     for attempt in 0..MAX_ATTEMPTS {
         let mutex_clone_simple = Arc::clone(&mutex);
@@ -213,7 +253,15 @@ fn main() {
                 Err(e) => println!("Error receiving cycles from thread: {:?}", e),
             }
         }
+ 
+        
+        // Update historical data with new data for lifetime analysis
+        historical_cycles_data.extend(cycles_data_simple.iter().cloned());
+        historical_cycles_data.extend(cycles_data_basic.iter().cloned());
 
+        // Calculate and print lifetime statistics
+        let (lifetime_mean, lifetime_std_deviation) = calculate_statistics(&historical_cycles_data);
+        println!("Lifetime Mean: {}, Lifetime Std Dev: {}", lifetime_mean, lifetime_std_deviation);
         let (mean_simple, std_deviation_simple) = calculate_statistics(&cycles_data_simple);
         let (mean_basic, std_deviation_basic) = calculate_statistics(&cycles_data_basic);
 
@@ -226,10 +274,15 @@ fn main() {
             break;
         }
     }
+    // Append the current session's data to the file for future runs
+    append_cycle_data_to_file(DATA_FILE_PATH, &cycles_data_simple.make_contiguous())?;
+    append_cycle_data_to_file(DATA_FILE_PATH, &cycles_data_basic.make_contiguous())?;
 
     // Check if the loop completed due to reaching the max attempts without satisfying condition
     if !successful_attempt {
-        println!("Attempt limit reached. Potential VM detected or inefficient VM. Exiting program.");
-        exit(1);
+        println!("Attempt limit reached. Potential VM detected or inefficient VM.");
+        return Err(io::Error::new(io::ErrorKind::Other, "Maximum attempt limit reached without meeting condition."));
     }
+
+    Ok(())
 }
