@@ -288,10 +288,8 @@ fn main() -> io::Result<()> {
         handle_basic_rdtscp.join().unwrap();
         for _ in 0..4 {
             match rx.recv() {
-                Ok(("simple", cycles)) => cycles_data_simple.push_back(cycles),
-                Ok(("basic", cycles)) => cycles_data_basic.push_back(cycles),
-                Ok(("simple_rdtscp", cycles)) => cycles_data_simple.push_back(cycles),
-                Ok(("basic_rdtscp", cycles)) => cycles_data_basic.push_back(cycles),
+                Ok(("simple", cycles)) | Ok(("simple_rdtscp", cycles)) => cycles_data_simple.push_back(cycles),
+                Ok(("basic", cycles)) | Ok(("basic_rdtscp", cycles)) => cycles_data_basic.push_back(cycles),
                 Ok(_) => (),
                 Err(e) => println!("Error receiving cycles from thread: {:?}", e),
             }
