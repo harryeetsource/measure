@@ -213,10 +213,11 @@ unsafe fn rdtscp() -> (u64, u32) {
 
 fn main() -> io::Result<()> {
     const ITERATIONS: u32 = 1000;
-    const MAX_ATTEMPTS: u32 = 50;
-    const CYCLE_THRESHOLD: f64 = 21000.0;
-    const CYCLE_THRESHOLD2: f64 = 10000.0;
+    const MAX_ATTEMPTS: u32 = 5000;
+    const CYCLE_THRESHOLD: f64 = 30000.0;
+    const CYCLE_THRESHOLD2: f64 = 8000.0;
     const DATA_FILE_PATH: &str = "cycle_data.txt";
+    const LIFE_DEV: f64 = 40000.0;
 
     // Initialize cycle data vectors for this session
     let mut cycles_data_simple = VecDeque::new();
@@ -227,10 +228,11 @@ fn main() -> io::Result<()> {
 
     let mutex = Arc::new(Mutex::new(0));
     let (tx, rx) = channel();
-
+    let mut attempt = 0;
     let mut successful_attempt = false;
 
-    for attempt in 0..MAX_ATTEMPTS {
+    while attempt < MAX_ATTEMPTS {
+        attempt += 1;
         let mutex_clone_simple = Arc::clone(&mutex);
         let tx_clone_simple = tx.clone();
     
@@ -308,19 +310,24 @@ fn main() -> io::Result<()> {
 
         println!("Attempt {}: Simple Mean cycles: {}, Standard Deviation: {}", attempt + 1, mean_simple, std_deviation_simple);
         println!("Attempt {}: Basic Mean cycles: {}, Standard Deviation: {}", attempt + 1, mean_basic, std_deviation_basic);
-
-        if mean_simple < CYCLE_THRESHOLD && mean_basic < CYCLE_THRESHOLD2 {
-            println!("Below cycle threshold, indicating non-VM or efficient VM.");
-            successful_attempt = true; // Mark successful attempt
+        if attempt <= 2500 {
+            if mean_simple < CYCLE_THRESHOLD && mean_basic < CYCLE_THRESHOLD2 {
+                println!("Below cycle threshold, indicating non-VM or efficient VM.");
+                successful_attempt = true;
+                break;
+            }
+        } else if lifetime_std_deviation < LIFE_DEV {
+            // This checks the standard deviation condition after 2500 attempts
+            println!("Standard deviation below threshold, indicating non-VM or efficient VM.");
+            successful_attempt = true;
             break;
         }
-    }
+    
     // Append the current session's data to the file for future runs
     append_cycle_data_to_file(DATA_FILE_PATH, &cycles_data_simple.make_contiguous())?;
     append_cycle_data_to_file(DATA_FILE_PATH, &cycles_data_basic.make_contiguous())?;
-
-    // Check if the loop completed due to reaching the max attempts without satisfying condition
-    if !successful_attempt {
+}
+    if !successful_attempt && attempt >= MAX_ATTEMPTS {
         println!("Attempt limit reached. Potential VM detected or inefficient VM.");
         return Err(io::Error::new(io::ErrorKind::Other, "Maximum attempt limit reached without meeting condition."));
     }
