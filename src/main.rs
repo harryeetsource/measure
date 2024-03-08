@@ -199,6 +199,17 @@ fn calculate_statistics(data: &VecDeque<u64>) -> (f64, f64) {
 
     (mean, std_deviation)
 }
+unsafe fn rdtscp() -> (u64, u32) {
+    let lo: u32;
+    let hi: u32;
+    let aux: u32;
+    asm!(
+        "rdtscp",
+        out("eax") lo, out("edx") hi, lateout("ecx") aux,
+        options(nomem, nostack, preserves_flags),
+    );
+    (((hi as u64) << 32) | lo as u64, aux)
+}
 
 fn main() -> io::Result<()> {
     const ITERATIONS: u32 = 1000;
@@ -222,7 +233,8 @@ fn main() -> io::Result<()> {
     for attempt in 0..MAX_ATTEMPTS {
         let mutex_clone_simple = Arc::clone(&mutex);
         let tx_clone_simple = tx.clone();
-
+    
+        // Spawn the first thread with RDTSC measurement
         let handle_simple = thread::spawn(move || {
             let _guard = mutex_clone_simple.lock().unwrap();
             let start = rdtsc();
@@ -230,10 +242,25 @@ fn main() -> io::Result<()> {
             let end = rdtsc();
             tx_clone_simple.send(("simple", end - start)).unwrap();
         });
-
+    
+        // Clone `mutex` and `tx` again for the second use
+        let mutex_clone_simple_rdtscp = Arc::clone(&mutex);
+        let tx_clone_simple_rdtscp = tx.clone();
+    
+        // Spawn the second thread with RDTSCP measurement
+        let handle_simple_rdtscp = thread::spawn(move || {
+            let _guard = mutex_clone_simple_rdtscp.lock().unwrap();
+            let (start, start_aux) = unsafe { rdtscp() };
+            simple_operations(ITERATIONS);
+            let (end, end_aux) = unsafe { rdtscp() };
+            println!("Start AUX (simple operations): {}, End AUX: {}", start_aux, end_aux);
+            tx_clone_simple_rdtscp.send(("simple_rdtscp", end - start)).unwrap();
+        });
+    
+        // Similar cloning for "basic" operations
         let mutex_clone_basic = Arc::clone(&mutex);
         let tx_clone_basic = tx.clone();
-
+    
         let handle_basic = thread::spawn(move || {
             let _guard = mutex_clone_basic.lock().unwrap();
             let start = rdtsc();
@@ -241,14 +268,30 @@ fn main() -> io::Result<()> {
             let end = rdtsc();
             tx_clone_basic.send(("basic", end - start)).unwrap();
         });
-
+    
+        let mutex_clone_basic_rdtscp = Arc::clone(&mutex);
+        let tx_clone_basic_rdtscp = tx.clone();
+    
+        let handle_basic_rdtscp = thread::spawn(move || {
+            let _guard = mutex_clone_basic_rdtscp.lock().unwrap();
+            let (start, start_aux) = unsafe { rdtscp() };
+            basic_cpu_operations(ITERATIONS);
+            let (end, end_aux) = unsafe { rdtscp() };
+            println!("Start AUX (basic operations): {}, End AUX: {}", start_aux, end_aux);
+            tx_clone_basic_rdtscp.send(("basic_rdtscp", end - start)).unwrap();
+        });
+    
+        // Ensure all threads have completed
         handle_simple.join().unwrap();
+        handle_simple_rdtscp.join().unwrap();
         handle_basic.join().unwrap();
-
-        for _ in 0..2 {
+        handle_basic_rdtscp.join().unwrap();
+        for _ in 0..4 {
             match rx.recv() {
                 Ok(("simple", cycles)) => cycles_data_simple.push_back(cycles),
                 Ok(("basic", cycles)) => cycles_data_basic.push_back(cycles),
+                Ok(("simple_rdtscp", cycles)) => cycles_data_simple.push_back(cycles),
+                Ok(("basic_rdtscp", cycles)) => cycles_data_basic.push_back(cycles),
                 Ok(_) => (),
                 Err(e) => println!("Error receiving cycles from thread: {:?}", e),
             }
