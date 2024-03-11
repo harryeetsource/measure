@@ -26,6 +26,19 @@ fn rdtsc() -> u64 {
     }
     ((hi as u64) << 32) | (lo as u64)
 }
+fn execute_nop_sled(iterations: u32) {
+
+
+    // Execute NOP sled
+    for _ in 0..iterations {
+        unsafe {
+            asm!("nop");
+            asm!("nop");
+        }
+    }
+
+}
+
 fn basic_cpu_operations(iterations: u32) {
     let mut y = 0u64; // Use a different variable for operations
     let mut sum = 0u64; // To accumulate results and prevent optimization
@@ -222,6 +235,7 @@ fn main() -> io::Result<()> {
     // Initialize cycle data vectors for this session
     let mut cycles_data_simple = VecDeque::new();
     let mut cycles_data_basic = VecDeque::new();
+    let mut cycles_data_nop = VecDeque::new();
 
     // Read historical cycle data from file
     let mut historical_cycles_data = read_cycle_data_from_file(DATA_FILE_PATH)?;
@@ -282,16 +296,29 @@ fn main() -> io::Result<()> {
             println!("Start AUX (basic operations): {}, End AUX: {}", start_aux, end_aux);
             tx_clone_basic_rdtscp.send(("basic_rdtscp", end - start)).unwrap();
         });
-    
+        let mutex_clone_nop_rdtscp = Arc::clone(&mutex);
+        let tx_clone_nop_rdtscp = tx.clone();
+
+        let handle_nop_rdtscp = thread::spawn(move ||{
+            let _guard = mutex_clone_nop_rdtscp.lock().unwrap();
+            let (start, start_aux) = unsafe { rdtscp() };
+            execute_nop_sled(ITERATIONS);
+            let (end, end_aux) = unsafe { rdtscp() };
+            println!("Start AUX (nop sled): {}, End AUX: {}", start_aux, end_aux);
+            tx_clone_nop_rdtscp.send(("nop rdtscp", end - start)).unwrap();
+
+        });
         // Ensure all threads have completed
+        handle_nop_rdtscp.join().unwrap();
         handle_simple.join().unwrap();
         handle_simple_rdtscp.join().unwrap();
         handle_basic.join().unwrap();
         handle_basic_rdtscp.join().unwrap();
-        for _ in 0..4 {
+        for _ in 0..5 {
             match rx.recv() {
                 Ok(("simple", cycles)) | Ok(("simple_rdtscp", cycles)) => cycles_data_simple.push_back(cycles),
                 Ok(("basic", cycles)) | Ok(("basic_rdtscp", cycles)) => cycles_data_basic.push_back(cycles),
+                Ok(("nop rdtscp", cycles )) => cycles_data_nop.push_back(cycles),
                 Ok(_) => (),
                 Err(e) => println!("Error receiving cycles from thread: {:?}", e),
             }
@@ -307,9 +334,10 @@ fn main() -> io::Result<()> {
         println!("Lifetime Mean: {}, Lifetime Std Dev: {}", lifetime_mean, lifetime_std_deviation);
         let (mean_simple, std_deviation_simple) = calculate_statistics(&cycles_data_simple);
         let (mean_basic, std_deviation_basic) = calculate_statistics(&cycles_data_basic);
-
+        let(mean_nop, std_deviation_nop) = calculate_statistics(&cycles_data_nop);
         println!("Attempt {}: Simple Mean cycles: {}, Standard Deviation: {}", attempt + 1, mean_simple, std_deviation_simple);
         println!("Attempt {}: Basic Mean cycles: {}, Standard Deviation: {}", attempt + 1, mean_basic, std_deviation_basic);
+        println!("Attempt {}: NOP Mean cycles: {}, Standard Deviation: {}", attempt + 1, mean_nop, std_deviation_nop);
         if attempt <= 2500 {
             if mean_simple < CYCLE_THRESHOLD && mean_basic < CYCLE_THRESHOLD2 {
                 println!("Below cycle threshold, indicating non-VM or efficient VM.");
